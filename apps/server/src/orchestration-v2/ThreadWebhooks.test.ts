@@ -1,9 +1,11 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { assert, it } from "@effect/vitest";
 import {
   EventId,
+  EnvironmentId,
   MessageId,
   NodeId,
   ProjectId,
@@ -36,6 +38,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import { FetchHttpClient, HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerConfig from "../config.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
@@ -67,6 +70,11 @@ const endpoint = {
   url: "http://127.0.0.1:12345/callback",
   token: Redacted.make("private-test-token"),
 };
+
+const environmentId = EnvironmentId.make("environment:webhook-test");
+const configuration = (
+  endpoints: NonNullable<Context.Service.Shape<typeof ThreadWebhooks.Configuration>>["endpoints"],
+) => ({ environmentId, endpoints });
 
 const setup = Effect.gen(function* () {
   const sink = yield* EventSink.EventSinkV2;
@@ -285,12 +293,16 @@ it.effect(
         "thread.user-input.requested",
       ]);
       assert.isFalse(notifications.some((event) => "settled" in event));
-    }).pipe(Effect.provide(layer), Effect.provideService(ThreadWebhooks.Configuration, [endpoint])),
+      assert.isTrue(notifications.every((event) => event.environmentId === environmentId));
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(ThreadWebhooks.Configuration, configuration([endpoint])),
+    ),
 );
 
-it.effect(
-  "retries after restart with the same delivery id and keeps authorization out of durable payloads",
-  () =>
+it.effect.each(["current", "legacy"] as const)(
+  "retries %s queued events with unchanged identity and authorization kept out of durable payloads",
+  (version) =>
     Effect.gen(function* () {
       const requests: Array<{ authorization: string | null; key: string | null; body: string }> =
         [];
@@ -308,6 +320,11 @@ it.effect(
         const { sink, question } = yield* setup;
         const service = yield* ThreadWebhooks.ThreadWebhooks;
         yield* sink.write({ events: [question("retry")] });
+        if (version === "legacy") {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`UPDATE pulsar_thread_webhook_outbox
+            SET payload_json = json_remove(payload_json, '$.environmentId')`;
+        }
         assert.equal(yield* service.deliverPending, 1000);
         assert.equal((yield* rows)[0]?.attempt_count, 1);
         assert.notInclude((yield* rows)[0]!.payload_json, "private-test-token");
@@ -317,14 +334,22 @@ it.effect(
         yield* Effect.gen(function* () {
           const restarted = yield* ThreadWebhooks.ThreadWebhooks;
           assert.isUndefined(yield* restarted.deliverPending);
-        }).pipe(Effect.provide(Layer.fresh(ThreadWebhooks.layer)));
+        }).pipe(
+          Effect.provide(Layer.fresh(ThreadWebhooks.layer)),
+          Effect.provideService(ThreadWebhooks.Configuration, {
+            environmentId: EnvironmentId.make("environment:replacement"),
+            endpoints: [endpoint],
+          }),
+        );
         assert.lengthOf(yield* rows, 0);
         assert.lengthOf(requests, 2);
         assert.equal(requests[0]?.authorization, "Bearer private-test-token");
         assert.equal(requests[0]?.key, "grok:retry");
         assert.deepEqual(requests[1], requests[0]);
+        const sent = yield* decodeEvent(requests[0]!.body);
+        assert.equal(sent.environmentId, version === "current" ? environmentId : undefined);
       }).pipe(Effect.provide(layer), Effect.provideService(FetchHttpClient.Fetch, fetch));
-    }).pipe(Effect.provideService(ThreadWebhooks.Configuration, [endpoint])),
+    }).pipe(Effect.provideService(ThreadWebhooks.Configuration, configuration([endpoint]))),
 );
 
 it.effect(
@@ -399,7 +424,10 @@ it.effect(
           ?.status,
         "running",
       );
-    }).pipe(Effect.provide(layer), Effect.provideService(ThreadWebhooks.Configuration, [endpoint])),
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(ThreadWebhooks.Configuration, configuration([endpoint])),
+    ),
 );
 
 it.effect.each(["usage_limited", "budget_limited"] as const)(
@@ -444,7 +472,10 @@ it.effect.each(["usage_limited", "budget_limited"] as const)(
       assert.equal(notification.status, status);
       assert.isNull(notification.runId);
       assert.notInclude(queued[0]!.payload_json, "private-goal-objective");
-    }).pipe(Effect.provide(layer), Effect.provideService(ThreadWebhooks.Configuration, [endpoint])),
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(ThreadWebhooks.Configuration, configuration([endpoint])),
+    ),
 );
 
 it.effect("keeps removed or changed destinations dormant", () =>
@@ -456,11 +487,14 @@ it.effect("keeps removed or changed destinations dormant", () =>
         assert.isUndefined(yield* (yield* ThreadWebhooks.ThreadWebhooks).deliverPending);
       }).pipe(
         Effect.provide(Layer.fresh(ThreadWebhooks.layer)),
-        Effect.provideService(ThreadWebhooks.Configuration, endpoints),
+        Effect.provideService(ThreadWebhooks.Configuration, configuration(endpoints)),
       );
       assert.lengthOf(yield* rows, 1);
     }
-  }).pipe(Effect.provide(layer), Effect.provideService(ThreadWebhooks.Configuration, [endpoint])),
+  }).pipe(
+    Effect.provide(layer),
+    Effect.provideService(ThreadWebhooks.Configuration, configuration([endpoint])),
+  ),
 );
 
 it.effect(
@@ -488,7 +522,10 @@ it.effect(
         assert.equal(redirect, "error");
         assert.equal((yield* rows)[0]?.attempt_count, 1);
       }).pipe(Effect.provide(layer), Effect.provideService(FetchHttpClient.Fetch, fetch));
-    }).pipe(Effect.provideService(ThreadWebhooks.Configuration, [endpoint]), Effect.scoped),
+    }).pipe(
+      Effect.provideService(ThreadWebhooks.Configuration, configuration([endpoint])),
+      Effect.scoped,
+    ),
 );
 
 it.live("rejects a real HTTP redirect and cancels an accepted response body", () =>
@@ -544,12 +581,15 @@ it.live("rejects a real HTTP redirect and cancels an accepted response body", ()
       assert.equal(forwarded, 0);
     }).pipe(
       Effect.provide(layer),
-      Effect.provideService(ThreadWebhooks.Configuration, [
-        {
-          ...endpoint,
-          url: `http://127.0.0.1:${address.port}/callback`,
-        },
-      ]),
+      Effect.provideService(
+        ThreadWebhooks.Configuration,
+        configuration([
+          {
+            ...endpoint,
+            url: `http://127.0.0.1:${address.port}/callback`,
+          },
+        ]),
+      ),
     );
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );
@@ -576,7 +616,7 @@ it.effect("interrupts in-flight delivery at worker shutdown and recovers the com
       );
       assert.lengthOf(yield* rows, 0);
     }).pipe(Effect.provide(layer), Effect.provideService(FetchHttpClient.Fetch, fetch));
-  }).pipe(Effect.provideService(ThreadWebhooks.Configuration, [endpoint])),
+  }).pipe(Effect.provideService(ThreadWebhooks.Configuration, configuration([endpoint]))),
 );
 
 it.effect("only captures matching project and thread filters and defaults to disabled", () =>
@@ -598,16 +638,19 @@ it.effect("requires both configured filters to match", () =>
     );
   }).pipe(
     Effect.provide(layer),
-    Effect.provideService(ThreadWebhooks.Configuration, [
-      { ...endpoint, id: "wrong-project", projectIds: [ProjectId.make("other")] },
-      { ...endpoint, id: "wrong-thread", threadIds: [ThreadId.make("other")] },
-      {
-        ...endpoint,
-        id: "matching",
-        projectIds: [ProjectId.make("project")],
-        threadIds: [ThreadId.make("webhook-thread")],
-      },
-    ]),
+    Effect.provideService(
+      ThreadWebhooks.Configuration,
+      configuration([
+        { ...endpoint, id: "wrong-project", projectIds: [ProjectId.make("other")] },
+        { ...endpoint, id: "wrong-thread", threadIds: [ThreadId.make("other")] },
+        {
+          ...endpoint,
+          id: "matching",
+          projectIds: [ProjectId.make("project")],
+          threadIds: [ThreadId.make("webhook-thread")],
+        },
+      ]),
+    ),
   ),
 );
 
@@ -620,15 +663,24 @@ it.effect(
       const config = yield* ServerConfig.ServerConfig;
       const filename = path.join(config.stateDir, "thread-webhooks.json");
       const load = Effect.service(ThreadWebhooks.Configuration).pipe(
-        Effect.provide(Layer.fresh(ThreadWebhooks.layerConfiguration)),
+        Effect.provide(
+          Layer.fresh(
+            ThreadWebhooks.layerConfiguration.pipe(Layer.provide(ServerEnvironment.layerIdentity)),
+          ),
+        ),
       );
-      assert.deepEqual(yield* load, []);
+      assert.isUndefined(yield* load);
       yield* fs.writeFileString(
         filename,
         '[{"id":"grok","url":"https://example.com/hook","token":"hidden-token"}]',
         { mode: 0o600 },
       );
-      const [loaded] = yield* load;
+      const loadedConfiguration = yield* load;
+      const loaded = loadedConfiguration?.endpoints[0];
+      assert.equal(
+        loadedConfiguration?.environmentId,
+        (yield* fs.readFileString(config.environmentIdPath)).trim(),
+      );
       assert.equal(loaded?.id, "grok");
       assert.equal(Redacted.value(loaded!.token), "hidden-token");
       yield* fs.writeFileString(
@@ -636,16 +688,19 @@ it.effect(
         '[{"id":"grok","url":"ftp://example.com","token":"hidden-token"}]',
       );
       const invalid = yield* load.pipe(Effect.flip);
+      if (invalid._tag !== "ThreadWebhookConfigError") return yield* Effect.die(invalid);
       assert.equal(invalid.reason, "invalid");
       assert.notInclude(String(invalid), "hidden-token");
       if ((yield* HostProcess.Platform) !== "win32") {
         yield* fs.chmod(filename, 0o644);
-        assert.equal((yield* load.pipe(Effect.flip)).reason, "permissions");
+        const denied = yield* load.pipe(Effect.flip);
+        if (denied._tag !== "ThreadWebhookConfigError") return yield* Effect.die(denied);
+        assert.equal(denied.reason, "permissions");
       }
     }).pipe(
       Effect.provide(
         ServerConfig.layerTest(process.cwd(), { prefix: "thread-webhook-test-" }).pipe(
-          Layer.provideMerge(NodeServices.layer),
+          Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
         ),
       ),
     ),

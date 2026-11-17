@@ -279,14 +279,17 @@ describe("orchestrator MCP toolkit", () => {
           CodexOrchestratorReplayHarness,
         ).pipe(
           Layer.provide(
-            Layer.succeed(ThreadWebhooks.Configuration, [
-              {
-                id: "grok-proof",
-                url: `http://127.0.0.1:${address.port}/grok-routine`,
-                token: Redacted.make("local-proof-token"),
-                threadIds: [threadId],
-              },
-            ]),
+            Layer.succeed(ThreadWebhooks.Configuration, {
+              environmentId: EnvironmentId.make("environment:webhook-mcp"),
+              endpoints: [
+                {
+                  id: "grok-proof",
+                  url: `http://127.0.0.1:${address.port}/grok-routine`,
+                  token: Redacted.make("local-proof-token"),
+                  threadIds: [threadId],
+                },
+              ],
+            }),
           ),
         );
         const layerOrchestration = ThreadManagementService.layer.pipe(
@@ -388,6 +391,7 @@ describe("orchestrator MCP toolkit", () => {
           expect(question.idempotencyKey).toBe(question.event.deliveryId);
           expect(question.event).toMatchObject({
             type: "thread.user-input.requested",
+            environmentId: "environment:webhook-mcp",
             threadId,
             projectId,
             runId: launch.runId,
@@ -421,6 +425,7 @@ describe("orchestrator MCP toolkit", () => {
           expect(completion.idempotencyKey).toBe(completion.event.deliveryId);
           expect(completion.event).toMatchObject({
             type: "thread.run.terminal",
+            environmentId: "environment:webhook-mcp",
             threadId,
             runId: launch.runId,
             status: "completed",

@@ -167,7 +167,10 @@ with a bounded error that does not print the token. Keep this file out of Git.
 
 T3 sends JSON with `Authorization: Bearer YOUR_WEBHOOK_TOKEN` and an
 `Idempotency-Key` header equal to `deliveryId`. The version 1 payload includes
-`eventId`, `sequence`, `occurredAt`, `projectId`, `threadId`, and `runId`.
+`environmentId`, `eventId`, `sequence`, `occurredAt`, `projectId`, `threadId`, and `runId`.
+T3 reads `environmentId` from its saved environment identity. No webhook setting
+is needed for it. Use this ID to select the correct MCP connection when several
+hosts send to the same routine. Retrying a delivery preserves its environment ID.
 `runId` can be null if the request has no associated run. Event types are:
 
 - `thread.user-input.requested`, with `requestId` and `status: "pending"`.
@@ -185,7 +188,8 @@ whole thread have settled. A question and a permission approval are different
 requests. Store these bot instructions with the bot so each callback can resume
 the same process:
 
-1. Deduplicate by `deliveryId`, then read the thread with `t3_thread_read`.
+1. Select the environment by `environmentId`, deduplicate by that ID and
+   `deliveryId`, then read the thread with `t3_thread_read`.
 2. For a user-input request, use `t3_pending_request` to read it and submit an
    answer through its response action. For an approval request, ask a human to
    approve or reject it in T3 Code. MCP cannot approve permissions.
@@ -201,6 +205,11 @@ so a callback can arrive again after the receiver has already processed it.
 The receiver must deduplicate and read current state, since retries can arrive
 after newer events. Delivery failures appear in host logs with IDs and status,
 without the token or destination URL.
+
+Deliveries queued by an older build can lack `environmentId`. T3 preserves their
+stored JSON on retry. For these legacy callbacks, use a known source-to-environment
+mapping and confirm the thread through that environment's MCP connection. If the
+source is ambiguous, do not act on the callback automatically.
 
 This fork keeps queued deliveries in `pulsar_thread_webhook_outbox` in the same
 database. It creates this private table at startup without adding an upstream

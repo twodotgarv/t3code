@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 import {
   EventId,
+  EnvironmentId,
   NonNegativeInt,
   ProjectId,
   ProviderThreadId,
@@ -13,6 +14,8 @@ import { OrchestrationV2ProviderFailureClass } from "./orchestrationV2.ts";
 
 const common = {
   schemaVersion: Schema.Literal(1),
+  // Optional only for deliveries queued before environment identity was included.
+  environmentId: Schema.optional(EnvironmentId),
   deliveryId: Schema.String,
   eventId: EventId,
   sequence: NonNegativeInt,
