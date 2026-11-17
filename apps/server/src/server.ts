@@ -1,3 +1,4 @@
+import * as ThreadWebhooks from "./orchestration-v2/ThreadWebhooks.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Random from "effect/Random";
@@ -810,6 +811,7 @@ const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
   // fetch interval goes in context here, before the first build captures it.
   Layer.provideMerge(VcsAutomaticFetchInterval.layer.pipe(Layer.provide(layerServerSettings))),
   Layer.provide(NetService.layer),
+  Layer.provideMerge(ThreadWebhooks.layerConfiguration),
 );
 
 const layerCommandReadiness = HttpRouter.middleware(
