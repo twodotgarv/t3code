@@ -1,0 +1,89 @@
+name: Sync T3 upstream
+
+on:
+  schedule:
+    - cron: "23 20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-t3-upstream
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'twodotgarv/t3code' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      active: ${{ steps.sync.outputs.active }}
+      base: ${{ steps.sync.outputs.base }}
+      upstream: ${{ steps.sync.outputs.upstream }}
+      head: ${{ steps.sync.outputs.head }}
+      pr: ${{ steps.sync.outputs.pr }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare one draft update PR
+        id: sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh auth setup-git --hostname github.com
+          node .github/scripts/sync-upstream.cjs prepare
+
+  validate:
+    needs: prepare
+    if: needs.prepare.outputs.active == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # Candidate code and install hooks receive no write token or repository secrets.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.prepare.outputs.head }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test sync merge behavior
+        run: node --test .github/scripts/sync-upstream.test.cjs
+      - name: Setup Vite+ and dependencies
+        uses: ./.github/actions/setup-ci-deps
+      - name: Install Chromium for affected browser tests
+        run: node apps/web/node_modules/playwright/cli.js install --with-deps --only-shell chromium
+      - name: Check the candidate against fork main
+        env:
+          SYNC_BASE: ${{ needs.prepare.outputs.base }}
+        run: vp run check:changed "$SYNC_BASE" --concurrency 1
+
+  finish:
+    needs: [prepare, validate]
+    if: always() && needs.prepare.result == 'success' && needs.prepare.outputs.active == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # Use the trusted workflow revision, not scripts imported by the candidate.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Record current validation and request owner review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYNC_BASE: ${{ needs.prepare.outputs.base }}
+          SYNC_UPSTREAM: ${{ needs.prepare.outputs.upstream }}
+          SYNC_HEAD: ${{ needs.prepare.outputs.head }}
+          SYNC_PR: ${{ needs.prepare.outputs.pr }}
+          VALIDATION_RESULT: ${{ needs.validate.result }}
+        run: node .github/scripts/sync-upstream.cjs finish
