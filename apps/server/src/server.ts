@@ -814,7 +814,9 @@ const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
   // fetch interval goes in context here, before the first build captures it.
   Layer.provideMerge(VcsAutomaticFetchInterval.layer.pipe(Layer.provide(layerServerSettings))),
   Layer.provide(NetService.layer),
-  Layer.provideMerge(ThreadWebhooks.layerConfiguration),
+  Layer.provideMerge(
+    ThreadWebhooks.layerConfiguration.pipe(Layer.provide(ServerEnvironment.layerIdentity)),
+  ),
 );
 
 const layerCommandReadiness = HttpRouter.middleware(
