@@ -106,7 +106,16 @@ async function main() {
       git(cwd, "config", "user.name", "github-actions[bot]");
       git(cwd, "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com");
       details.head = mergeCandidate(cwd, { base, upstream, previous });
-      git(cwd, "push", "origin", `HEAD:refs/heads/${branch}`);
+      git(
+        cwd,
+        "-c",
+        "credential.helper=",
+        "-c",
+        "credential.https://github.com.helper=!gh auth git-credential",
+        "push",
+        "origin",
+        `HEAD:refs/heads/${branch}`,
+      );
       const data = {
         title,
         body: body({

@@ -27,22 +27,25 @@ jobs:
       head: ${{ steps.sync.outputs.head }}
       pr: ${{ steps.sync.outputs.pr }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-          sparse-checkout: |
-            /*
-            !/.repos/
-            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
-          sparse-checkout-cone-mode: false
+      # Public fetch avoids checkout's credential cleanup, which traverses malformed vendored gitlinks.
+      - name: Check out public source without credentials
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: |
+          git init .
+          git remote add origin https://github.com/twodotgarv/t3code.git
+          git sparse-checkout set --no-cone --stdin <<'PATTERNS'
+          /*
+          !/.repos/
+          !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          PATTERNS
+          git -c credential.helper= fetch --filter=blob:none --no-recurse-submodules --no-tags origin "$CHECKOUT_SHA"
+          git checkout --detach "$CHECKOUT_SHA"
       - name: Prepare one draft update PR
         id: sync
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh auth setup-git --hostname github.com
-          node .github/scripts/sync-upstream.cjs prepare
+        run: node .github/scripts/sync-upstream.cjs prepare
 
   validate:
     needs: prepare
@@ -53,16 +56,20 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          ref: ${{ needs.prepare.outputs.head }}
-          fetch-depth: 0
-          persist-credentials: false
-          sparse-checkout: |
-            /*
-            !/.repos/
-            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
-          sparse-checkout-cone-mode: false
+      # Public fetch avoids checkout's credential cleanup, which traverses malformed vendored gitlinks.
+      - name: Check out public source without credentials
+        env:
+          CHECKOUT_SHA: ${{ needs.prepare.outputs.head }}
+        run: |
+          git init .
+          git remote add origin https://github.com/twodotgarv/t3code.git
+          git sparse-checkout set --no-cone --stdin <<'PATTERNS'
+          /*
+          !/.repos/
+          !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          PATTERNS
+          git -c credential.helper= fetch --filter=blob:none --no-recurse-submodules --no-tags origin "$CHECKOUT_SHA"
+          git checkout --detach "$CHECKOUT_SHA"
       - name: Test sync merge behavior
         run: node --test .github/scripts/sync-upstream.test.cjs
       - name: Setup Vite+ and dependencies
@@ -84,15 +91,20 @@ jobs:
       pull-requests: write
     steps:
       # Use the trusted workflow revision, not scripts imported by the candidate.
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-          sparse-checkout: |
-            /*
-            !/.repos/
-            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
-          sparse-checkout-cone-mode: false
+      # Public fetch avoids checkout's credential cleanup, which traverses malformed vendored gitlinks.
+      - name: Check out public source without credentials
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: |
+          git init .
+          git remote add origin https://github.com/twodotgarv/t3code.git
+          git sparse-checkout set --no-cone --stdin <<'PATTERNS'
+          /*
+          !/.repos/
+          !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          PATTERNS
+          git -c credential.helper= fetch --filter=blob:none --no-recurse-submodules --no-tags origin "$CHECKOUT_SHA"
+          git checkout --detach "$CHECKOUT_SHA"
       - name: Record current validation and request owner review
         env:
           GH_TOKEN: ${{ github.token }}
