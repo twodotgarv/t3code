@@ -1,3 +1,4 @@
+import * as ThreadWebhooks from "./ThreadWebhooks.ts";
 import type * as NodeWorkerThreads from "node:worker_threads";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -4078,6 +4079,7 @@ it.effect.each(["direct", "provider-batch", "cancel-provider-batch"] as const)(
           Layer.mergeAll(
             layerStoresProvided,
             layerPausingOutbox,
+            ThreadWebhooks.layer.pipe(Layer.provide(layerDatabase)),
             layerCommandReceiptStoreProvided,
             ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
             TurnItemPositionStore.layer.pipe(Layer.provide(layerDatabase)),
@@ -4376,6 +4378,7 @@ it.effect.each(["cancel transaction", "fail transaction", "cancel publication"] 
           Layer.mergeAll(
             layerStoresProvided,
             layerPausingOutbox,
+            ThreadWebhooks.layer.pipe(Layer.provide(layerDatabase)),
             layerCommandReceiptStoreProvided,
             ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
             TurnItemPositionStore.layer.pipe(Layer.provide(layerDatabase)),

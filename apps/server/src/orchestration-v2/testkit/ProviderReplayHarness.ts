@@ -23,6 +23,7 @@ import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ManagedPolicy from "../../policy/ManagedPolicy.ts";
 import * as ThreadManagementService from "../ThreadManagementService.ts";
+import * as ThreadWebhooks from "../ThreadWebhooks.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
@@ -215,7 +216,8 @@ export function runOrchestratorV2ProviderReplayScenario<
   | Error
   | MigrationError
   | PlatformError.PlatformError
-  | SqlError,
+  | SqlError
+  | ThreadWebhooks.ThreadWebhookStoreError,
   never
 > {
   const replayGate = makeProviderReplayGate(
@@ -256,9 +258,14 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
   | Orchestrator.OrchestratorV2
   | EffectWorker.OrchestrationEffectWorkerV2
   | EventSink.EventSinkV2
+  | ThreadWebhooks.ThreadWebhooks
   | CommandOutputRecorder.CommandOutputRecorder
   | ProviderSessionManager.ProviderSessionManagerV2,
-  Error | MigrationError | PlatformError.PlatformError | SqlError
+  | Error
+  | MigrationError
+  | PlatformError.PlatformError
+  | SqlError
+  | ThreadWebhooks.ThreadWebhookStoreError
 > {
   const layerRegistry = harness.makeProviderAdapterRegistryLayer(
     scenario.transcript,
@@ -294,10 +301,15 @@ export function layerWithRegistry<Error>(
   | EffectOutbox.EffectOutboxV2
   | EffectWorker.OrchestrationEffectWorkerV2
   | EventSink.EventSinkV2
+  | ThreadWebhooks.ThreadWebhooks
   | ProviderSessionManager.ProviderSessionManagerV2
   | CommandOutputRecorder.CommandOutputRecorder
   | ThreadCommandExecutor.ThreadCommandExecutor,
-  Error | MigrationError | PlatformError.PlatformError | SqlError
+  | Error
+  | MigrationError
+  | PlatformError.PlatformError
+  | SqlError
+  | ThreadWebhooks.ThreadWebhookStoreError
 > {
   const layerServerConfig = Layer.effect(
     ServerConfig.ServerConfig,
@@ -347,6 +359,7 @@ export function layerWithRegistry<Error>(
     CommandReceiptStore.layer,
     layerEffectOutboxProvided,
     TurnItemPositionStore.layer,
+    ThreadWebhooks.layer,
   ).pipe(Layer.provide(layerDatabase));
   const layerEventSinkProvided = EventSink.layerFromStores.pipe(
     Layer.provide(Layer.mergeAll(layerStores, layerDatabase)),
@@ -560,6 +573,7 @@ export function layerWithRegistry<Error>(
     Layer.provide(Layer.merge(layerStores, layerEffectExecutorProvided)),
   );
   const layerReplayRuntime = Layer.mergeAll(
+    ThreadWebhooks.layer.pipe(Layer.provide(layerDatabase)),
     layerEffectOutboxProvided,
     layerOrchestratorProvided,
     layerProviderSessionManagerProvided,
@@ -579,7 +593,7 @@ export function layerWithRegistry<Error>(
   // Build recovery before runtime so it commits before the effect worker claims work.
   const layerStartupRecovery: Layer.Layer<
     never,
-    MigrationError | PlatformError.PlatformError | SqlError
+    MigrationError | PlatformError.PlatformError | SqlError | ThreadWebhooks.ThreadWebhookStoreError
   > =
     options.recoverOnStartup === true
       ? Layer.effectDiscard(
