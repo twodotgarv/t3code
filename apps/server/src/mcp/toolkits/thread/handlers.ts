@@ -7,6 +7,7 @@ import {
   OrchestratorMcpFailure,
   type OrchestrationV2Command,
 } from "@t3tools/contracts";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 import { topOfPinnedRunOrderKey } from "@t3tools/shared/pinOrderKey";
@@ -24,7 +25,7 @@ import type * as ThreadManagement from "../../../orchestration-v2/ThreadManageme
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
 import { queuedRunsInDeliveryOrder } from "../../../orchestration-v2/QueuedRunOrder.ts";
-import { ThreadToolkit } from "./tools.ts";
+import { CommandApprovalDecision, ThreadToolkit } from "./tools.ts";
 
 function queueEntry(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
@@ -92,6 +93,58 @@ const readQuestion = Effect.fn("mcp.readQuestion")(function* (input: {
     });
   return { ...context, request, item };
 });
+
+const readCommandApproval = Effect.fn("mcp.readCommandApproval")(function* (input: {
+  threadId: ThreadId;
+  requestId: RuntimeRequestId;
+}) {
+  const scope = yield* McpInvocationContext.McpInvocationContext;
+  const allowedSessions = yield* Config.String("T3CODE_MCP_APPROVAL_SESSION_IDS").pipe(
+    Config.withDefault(""),
+    Effect.mapError(unavailable),
+  );
+  const { client } = scope;
+  const modes = McpInvocationContext.clientModeCeiling(client);
+  if (
+    client === undefined ||
+    client.linked === true ||
+    scope.thread !== undefined ||
+    modes.runtimeMode !== "full-access" ||
+    modes.interactionMode !== "default" ||
+    !allowedSessions.split(",").some((id) => id.trim() === client.sessionId)
+  ) {
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message: "This MCP session is not authorized to handle command approvals.",
+    });
+  }
+  const context = yield* readThread(input.threadId, ["runtimeRequests", "turnItems"], {
+    turnItemTypes: ["approval_request"],
+  });
+  const request = context.projection.runtimeRequests.find((entry) => entry.id === input.requestId);
+  const item = context.projection.turnItems.find(
+    (entry) => entry.type === "approval_request" && entry.requestId === input.requestId,
+  );
+  if (
+    request?.kind !== "command" ||
+    request.status !== "pending" ||
+    request.responseCapability.type !== "live" ||
+    request.nativeRequestRef?.driver !== "codex" ||
+    item?.type !== "approval_request" ||
+    item.commandApproval === undefined
+  ) {
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message: "No live Codex shell command approval with command details matches this request.",
+    });
+  }
+  const decisions = CommandApprovalDecision.literals.filter(
+    (decision) =>
+      item.options === undefined || item.options.some((option) => option.decision === decision),
+  );
+  return { ...context, client, item, commandApproval: item.commandApproval, decisions };
+});
+
 /** A field the chosen action needs. `null` counts as given, as in `beforeRunId: null`. */
 const required = <A>(value: A | undefined, name: string) =>
   value === undefined
@@ -278,6 +331,52 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
             answers,
           })
           .pipe(Effect.mapError(dispatchFailure));
+        return { sequence: result.sequence };
+      }),
+    ),
+  ),
+  t3_command_approval: McpToolAccess.either(
+    (input) => input.action === "read",
+    McpToolAccess.reads((input) =>
+      Effect.gen(function* () {
+        const { scope, commandApproval, item, decisions } = yield* readCommandApproval(input);
+        return {
+          environmentId: scope.environmentId,
+          threadId: input.threadId,
+          requestId: input.requestId,
+          ...commandApproval,
+          prompt: item.prompt,
+          decisions,
+        };
+      }),
+    ),
+    writesThread((input) =>
+      Effect.gen(function* () {
+        const decision = yield* required(input.decision, "decision");
+        const { threads, client, decisions } = yield* readCommandApproval(input);
+        if (!decisions.includes(decision)) {
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "This approval does not offer that decision.",
+          });
+        }
+        const result = yield* threads
+          .dispatch({
+            type: "runtime-request.respond",
+            commandId: yield* newCommandId(),
+            threadId: input.threadId,
+            requestId: input.requestId,
+            decision,
+          })
+          .pipe(Effect.mapError(dispatchFailure));
+        yield* Effect.logInfo("MCP command approval answered").pipe(
+          Effect.annotateLogs({
+            sessionId: client.sessionId,
+            threadId: input.threadId,
+            requestId: input.requestId,
+            decision,
+          }),
+        );
         return { sequence: result.sequence };
       }),
     ),

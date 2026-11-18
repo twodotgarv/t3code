@@ -39,6 +39,10 @@ export function assertToolCallReadOnlyOnRequestOutput(
     [[request?.id, request?.kind]],
     "the approval card must show the resolved request",
   );
+  if (request?.nativeRequestRef?.driver === "codex" && request.kind === "command") {
+    assert.include(approvals[0]?.commandApproval?.command, PROBE_FILE);
+    assert.isNotEmpty(approvals[0]?.commandApproval?.cwd);
+  }
 
   const writes = projection.turnItems.filter((item) =>
     request?.kind === "command"

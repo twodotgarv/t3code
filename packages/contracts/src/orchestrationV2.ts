@@ -1701,6 +1701,11 @@ const OrchestrationV2LinkRequestFields = {
   failure: Schema.optional(Schema.String),
 } as const;
 
+export const OrchestrationV2CommandApprovalDetails = Schema.Struct({
+  command: Schema.String,
+  cwd: Schema.String,
+});
+
 export const OrchestrationV2TurnItem = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -1806,6 +1811,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     type: Schema.Literal("approval_request"),
     requestId: RuntimeRequestId,
     requestKind: ProviderRequestKind,
+    commandApproval: Schema.optional(OrchestrationV2CommandApprovalDetails),
     prompt: Schema.optional(Schema.String),
     reason: Schema.optional(Schema.String),
     fullAccessOverride: Schema.optional(ProviderApprovalFullAccessOverride),
@@ -2691,6 +2697,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     type: Schema.Literal("approval_request"),
     requestId: RuntimeRequestId,
     requestKind: ProviderRequestKind,
+    commandApproval: Schema.optional(OrchestrationV2CommandApprovalDetails),
     prompt: Schema.optional(Schema.String),
     reason: Schema.optional(Schema.String),
     fullAccessOverride: Schema.optional(ProviderApprovalFullAccessOverride),

@@ -4637,6 +4637,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly nativeRequestId: string;
           readonly requestKind: ProviderRequestKind;
           readonly prompt?: string | null;
+          readonly commandApproval?: { readonly command: string; readonly cwd: string };
           readonly appName?: string;
           readonly options?: ReadonlyArray<ProviderApprovalOption>;
         }) {
@@ -4717,6 +4718,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             type: "approval_request",
             requestId,
             requestKind: input.requestKind,
+            ...(input.commandApproval === undefined
+              ? {}
+              : { commandApproval: input.commandApproval }),
             ...(input.prompt === null || input.prompt === undefined
               ? {}
               : { prompt: input.prompt }),
@@ -5876,6 +5880,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               nativeItemId: payload.itemId,
               nativeRequestId,
               requestKind: "command",
+              ...((payload.kind ?? "command") === "command" &&
+              payload.networkApprovalContext == null &&
+              payload.command?.trim() &&
+              payload.cwd?.trim()
+                ? { commandApproval: { command: payload.command, cwd: payload.cwd } }
+                : {}),
               ...((payload.reason ?? payload.command) === undefined
                 ? {}
                 : { prompt: payload.reason ?? payload.command }),

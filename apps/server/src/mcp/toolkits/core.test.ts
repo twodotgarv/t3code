@@ -13,6 +13,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
   RunId,
   ScheduledTaskError,
   ScheduledTask,
@@ -22,9 +23,11 @@ import {
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ThreadShell,
+  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import { pinOrderKeyBetween } from "@t3tools/shared/pinOrderKey";
 import * as DateTime from "effect/DateTime";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -292,6 +295,139 @@ it.effect("a pending question read keeps option previews", () => {
                     questions,
                   },
                 ],
+              }),
+          }),
+        ),
+      ),
+    ),
+  );
+});
+
+it.effect("only an authorized outside session can answer a live Codex command approval", () => {
+  const shell = McpToolAccessTestkit.liveThreadShell(threadId);
+  const projection = McpToolAccessTestkit.idleThreadProjection(shell);
+  const requestId = RuntimeRequestId.make("command-approval");
+  const codexSessionId = ProviderSessionId.make("provider-session");
+  const bot = { label: "Pulsar", sessionId: "pulsar-mcp", access: "full-access" } as const;
+  const outsideScope = { ...scope, thread: undefined, client: bot };
+  const details = { command: " git status --short", cwd: "/repo" };
+  const commands: OrchestrationV2ServerCommand[] = [];
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const call = (
+      args: Record<string, unknown>,
+      invocation: McpInvocationContext.McpInvocationScope = outsideScope,
+      sessions: string = bot.sessionId,
+    ) =>
+      server
+        .callTool({
+          name: "t3_command_approval",
+          arguments: { threadId, requestId, ...args },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+          Effect.provideService(
+            ConfigProvider.ConfigProvider,
+            ConfigProvider.fromUnknown({ T3CODE_MCP_APPROVAL_SESSION_IDS: sessions }),
+          ),
+        );
+    const accept = { action: "respond", decision: "accept" };
+    const read = { action: "read" };
+    for (const result of [
+      yield* call(read, outsideScope, ""),
+      yield* call(accept, { ...outsideScope, client: { ...bot, sessionId: "other-session" } }),
+      yield* call(accept, scope),
+      yield* call(accept, { ...outsideScope, client: { ...bot, linked: true } }),
+    ]) {
+      expect(declaredFailure(result)).toMatchObject({ code: "capability_denied" });
+    }
+    expect(declaredFailure(yield* call(accept, outsideScope, ""))).toMatchObject({
+      code: "capability_denied",
+    });
+    expect(
+      yield* Effect.flip(call({ action: "respond", decision: "acceptForSession" })),
+    ).toMatchObject({ _tag: "InvalidParams" });
+    expect(
+      declaredFailure(yield* call({ ...accept, requestId: "different-request" })),
+    ).toMatchObject({
+      code: "invalid_request",
+    });
+    expect(commands).toEqual([]);
+    expect((yield* call(read)).structuredContent).toEqual({
+      environmentId: scope.environmentId,
+      threadId,
+      requestId,
+      ...details,
+      prompt: "Run the status check",
+      decisions: ["accept", "decline"],
+    });
+    expect((yield* call(accept)).structuredContent).toEqual({ sequence: 7 });
+    expect(declaredFailure(yield* call(accept))).toMatchObject({ code: "invalid_request" });
+    expect(commands).toEqual([
+      expect.objectContaining({
+        type: "runtime-request.respond",
+        threadId,
+        requestId,
+        decision: "accept",
+      }),
+    ]);
+  }).pipe(
+    Effect.provide(
+      layerThreadToolkit.pipe(
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: () => Effect.succeed(shell),
+            getProjectThreadRecords: (): Effect.Effect<OrchestrationV2ThreadProjection> =>
+              Effect.succeed({
+                ...projection,
+                runtimeRequests: [
+                  {
+                    id: requestId,
+                    nodeId: NodeId.make("root"),
+                    providerTurnId: null,
+                    nativeRequestRef: {
+                      driver: ProviderDriverKind.make("codex"),
+                      nativeId: "command",
+                      strength: "strong",
+                    },
+                    kind: "command",
+                    status: commands.length === 0 ? "pending" : "resolved",
+                    responseCapability: { type: "live", providerSessionId: codexSessionId },
+                    createdAt: shell.createdAt,
+                    resolvedAt: null,
+                  },
+                ],
+                turnItems: [
+                  {
+                    id: TurnItemId.make("command-approval-item"),
+                    threadId,
+                    runId: null,
+                    nodeId: null,
+                    providerThreadId: null,
+                    providerTurnId: null,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal: 0,
+                    status: "waiting",
+                    title: null,
+                    startedAt: shell.createdAt,
+                    completedAt: null,
+                    updatedAt: shell.updatedAt,
+                    type: "approval_request",
+                    requestId,
+                    requestKind: "command",
+                    commandApproval: details,
+                    prompt: "Run the status check",
+                  },
+                ],
+              }),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                commands.push(command);
+                return { sequence: 7, storedEvents: [] };
               }),
           }),
         ),
